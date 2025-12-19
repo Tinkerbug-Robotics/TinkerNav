@@ -1,0 +1,23 @@
+{
+  "name": "TR_SkyTraqNMEA",
+  "keywords": "skytraq",
+  "description": "Arduino library for configuring and reading from skytraq receivers",
+  "authors":
+  [
+    {
+      "name": "Christian Pedersen",
+      "email": "tinkerbug@tinkerbugrobotics.com",
+      "maintainer": true
+    }
+  ],
+  "repository":
+  {
+    "type": "",
+    "url": ""
+  },
+  "version": "0.1",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": "TR_SkyTraqNMEA.h"
+}

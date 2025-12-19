@@ -1,0 +1,23 @@
+{
+  "name": "TR_RTKRoverWebUI",
+  "keywords": "RTK",
+  "description": "Arduino library for displaying rover data on web UI",
+  "authors":
+  [
+    {
+      "name": "Christian Pedersen",
+      "email": "tinkerbug@tinkerbugrobotics.com",
+      "maintainer": true
+    }
+  ],
+  "repository":
+  {
+    "type": "",
+    "url": ""
+  },
+  "version": "0.1",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": "TR_RTKRoverWebUI.h"
+}
