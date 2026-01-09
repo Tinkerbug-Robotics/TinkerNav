@@ -9,18 +9,18 @@ struct config
     inline static constexpr const char* AP_PASS = "Tinkerbug";
 
     // NMEA from SkyTraq
-    static constexpr uint8_t GNSS_TX = 35;
-    static constexpr uint8_t GNSS_RX = 36;
-    static constexpr uint8_t GNSS_RXD2 = 37;
+    static constexpr uint8_t GNSS_TX = 47;
+    static constexpr uint8_t GNSS_RX = 48;
+    static constexpr uint8_t GNSS_RXD2 = 16;
 
-    // ---------- LoRa Radio (SX1262) ----------
-    static constexpr uint8_t  L_DIO1 = 44;
-    static constexpr uint8_t  L_CS   = 7;
-    static constexpr uint8_t  L_BUSY = 43;
-    static constexpr uint8_t  L_RST  = 6;
-    static constexpr uint8_t  L_MISO = 2;
-    static constexpr uint8_t  L_MOSI = 4;
-    static constexpr uint8_t  L_SCK  = 5;
+    // LoRa Radio (LLC68)
+    static constexpr uint8_t  L_DIO1 = 18;
+    static constexpr uint8_t  L_CS   = 38;
+    static constexpr uint8_t  L_BUSY = 17;
+    static constexpr uint8_t  L_RST  = 37;
+    static constexpr uint8_t  L_MISO = 34;
+    static constexpr uint8_t  L_MOSI = 35;
+    static constexpr uint8_t  L_SCK  = 36;
 
     // Neopix LED driver pin
     static constexpr int NEO_PIN = 26;
@@ -53,7 +53,6 @@ struct config
 
     // Power update period (ms)
     static constexpr int PWR_UPDATE_PERIOD_MS = 2000;
-
 
 };
 
