@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Tinkerbug Robotics
+// Copyright (c) 2026 Tinkerbug Robotics
 //
 // MIT License
 //
@@ -14,16 +14,23 @@
 #include <CRC.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Preferences.h>
 
 // Tinkerbug library for SkyTraq configuration
 #include <TR_SkyTraqNMEA.h>
 TR_SkyTraqNMEA sky(Serial1);
 
+// Store settings in permanent memory, fall back to defaults only
+// if no value exists in preferences memory
+Preferences prefs;
+uint8_t g_num_battery_cells = config::NUM_BATTERY_CELLS;
+
+
 // ---------- Web Server ----------
 WebServer server(80);
 
 // ---------- LoRa radio ----------
-SX1262 radio = SX1262(new Module(config::L_CS, 
+LLCC68 radio = LLCC68(new Module(config::L_CS, 
                                  config::L_DIO1,
                                  config::L_RST,
                                  config::L_BUSY,
@@ -48,10 +55,10 @@ volatile bool opDone      = false;   // DIO1 ISR flag
 
 // ---------- Debug / Print Variables ----------
 // Status/debug
-volatile size_t        last_tx_bytes      = 0;    // Size of last TX packet
-volatile unsigned long last_tx_end_ms     = 0;    // When last TX completed
-volatile size_t        queued_bytes       = 0;    // Bytes waiting in queue
-volatile size_t        max_queued_bytes   = 0;    // High-water mark
+volatile size_t        last_tx_bytes      = 0;  // Size of last TX packet
+volatile unsigned long last_tx_end_ms     = 0;  // When last TX completed
+volatile size_t        queued_bytes       = 0;  // Bytes waiting in queue
+volatile size_t        max_queued_bytes   = 0;  // High-water mark
 
 // ---------- TX Statistics (for prints + web UI) ----------
 static uint32_t tx_active_start_ms       = 0;   // when current TX started
@@ -60,7 +67,7 @@ static uint32_t tx_bytes_accum           = 0;   // bytes transmitted in current 
 static uint32_t tx_stats_window_start_ms = 0;   // window start (ms)
 
 volatile uint32_t tx_bytes_last_window   = 0;   // bytes in last completed window
-volatile float    tx_duty_last_window    = 0.0f; // % TX time in last window
+volatile float    tx_duty_last_window    = 0.0f;// % TX time in last window
 
 volatile uint32_t dbg_burst_count      = 0;
 volatile uint32_t dbg_msg_total        = 0;
@@ -92,7 +99,6 @@ SemaphoreHandle_t rtcmMutex = nullptr;
 TaskHandle_t rtcmParseTaskHandle = nullptr;
 TaskHandle_t loraTxTaskHandle    = nullptr;
 
-
 // ---------- Forward Declarations ----------
 void startWeb();
 void handleRoot();
@@ -113,6 +119,7 @@ void debugInspectPacket(const uint8_t* payload, int lenWithoutCrc);
 size_t rtcmPopMessagesToBufferLocked(uint8_t* outBuf, size_t maxLen);
 void rtcmFlushLocked();
 bool rtcmEnqueueMessageLocked(const uint8_t* msg, uint16_t len);
+void handleSetCells();
 
 // ---------- LoRa ISR ----------
 void IRAM_ATTR dio1ISR()
@@ -131,8 +138,6 @@ Adafruit_NeoPixel pixels(1, config::NEO_PIN, NEO_GRB + NEO_KHZ800);
 void setup()
 {
     Serial.begin(115200);
-    // Include only if debugging as it stops for a connected USB serial
-    //while (!Serial){}; 
     delay(1000);
 
     // If the ESP32 resets print the reason
@@ -169,6 +174,21 @@ void setup()
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
     pinMode(config::VOLTAGE_PIN, INPUT);
+
+    // Load saved battery cell count (NVS). If not present, use config.h default.
+    prefs.begin("base", false);  // namespace "base", RW
+    uint8_t saved = prefs.getUChar("cells", 0xFF);
+    if (saved >= 1 && saved <= 6)
+    {
+        g_num_battery_cells = saved;
+        Serial.printf("Loaded NUM_BATTERY_CELLS from NVS: %u\n", g_num_battery_cells);
+    }
+    else
+    {
+        g_num_battery_cells = config::NUM_BATTERY_CELLS;
+        Serial.printf("No saved NUM_BATTERY_CELLS; using config.h default: %u\n", g_num_battery_cells);
+    }
+    prefs.end();
     
     // Initialize NeoPixel
     pixels.begin();
@@ -177,12 +197,61 @@ void setup()
 
     // Read initial voltage and update NeoPixel
     float v_batt = readBatteryVoltage();
-    float v_cell = v_batt / config::NUM_BATTERY_CELLS;
+    float v_cell = v_batt / g_num_battery_cells;
     float soc    = estimateSocFromPerCellVoltage(v_cell);
     showBatteryOnNeopixel(soc);
 
     // Start GNSS NMEA from SkyTraq
     Serial1.begin(115200, SERIAL_8N1, config::GNSS_RX, config::GNSS_TX);
+
+    // Configure SkyTraq
+    Serial.println("Reset SkyTraq to defaults ...");
+    while(sky.resetToDefaultsAndCheck() != 1)
+    {
+        Serial.println("failed, retrying");
+        delay(500);
+    }
+    delay(2500);
+
+    // Put receiver into RTK base using the configurable length and accuracy
+    Serial.print("Configuring RTK base mode with survey in ...");
+    while(sky.configureRtkBaseSurvey(config::SURVEY_IN_SEC,
+                                     config::SURVEY_IN_M,
+                                     false) != 1)
+    {
+        Serial.println("failed, retrying");
+        delay(500);
+    }
+    Serial.println(" success");
+
+    delay(1500);
+
+    Serial.print("Configuring RTCM output ...");
+
+    while (sky.configureRtcmOutput(true,
+                                    0x00,  // 1 Hz
+                                    true,  // 1005
+                                    true,  // GPS MSM
+                                    true,  // GLO
+                                    true,  // GAL
+                                    true,  // BDS
+                                    0x1E,0x00,0x1E,0x1E,
+                                    0x01,
+                                    0x02,
+                                    false
+                                ) != 1)
+    {
+        Serial.println(" failed, retrying");
+        delay(500);
+    }
+    Serial.println(" success");
+
+    // Want to see the RTCM messages and not NMEA, so disable NMEA
+    // Expect some warnings for NMEA types not already enabled
+    if (!sky.disableStandardNmea())
+    {
+        Serial.println("Warning: some NMEA disable commands NACKed or timed out.");
+    }
 
     // LoRa reset sequence
     digitalWrite(config::L_RST, LOW);
@@ -193,7 +262,7 @@ void setup()
     // RF switch via DIO2 (switch is internal to radio module)
     radio.setDio2AsRfSwitch(true);
 
-    Serial.print("SX1262 initializing ... ");
+    Serial.print("LoRa radio initializing ... ");
 
     int state = radio.begin();
     if (state != RADIOLIB_ERR_NONE)
@@ -242,51 +311,6 @@ void setup()
 
     // Non-blocking TX done callback
     radio.setDio1Action(dio1ISR);
-
-    // Configure SkyTraq
-    Serial.println("[GNSS] Configuring Skytraq to RTK base mode ...");
-    sky.resetToDefaultsAndCheck();
-    delay(2500);
-
-    // Put receiver into RTK base using the configurable length and accuracy
-    Serial.print("Configuring RTK base mode with survey in ...");
-    while(sky.configureRtkBaseSurvey(config::SURVEY_IN_SEC,
-                                     config::SURVEY_IN_M,
-                                     false) != 1)
-    {
-        Serial.println("failed, retrying");
-        delay(500);
-    }
-    Serial.println(" success");
-
-    delay(1500);
-
-    Serial.print("Configuring RTCM output ...");
-
-    while (sky.configureRtcmOutput(true,
-                                    0x00,  // 1 Hz
-                                    true,  // 1005
-                                    true,  // GPS MSM
-                                    true,  // GLO
-                                    true,  // GAL
-                                    true,  // BDS
-                                    0x1E,0x00,0x1E,0x1E,
-                                    0x01,
-                                    0x02,
-                                    false
-                                ) != 1)
-    {
-        Serial.println(" failed, retrying");
-        delay(500);
-    }
-    Serial.println(" success");
-
-    // Want to see the RTCM messages and not NMEA, so disable NMEA
-    // Expect some warnings for NMEA types not already enabled
-    if (!sky.disableStandardNmea())
-    {
-        Serial.println("Warning: some NMEA disable commands NACKed or timed out.");
-    }
 
     // Web UI
     startWeb();
@@ -342,17 +366,17 @@ void loop()
         last_update = millis();
 
         voltage = readBatteryVoltage();
-        float v_cell = voltage / config::NUM_BATTERY_CELLS;
+        float v_cell = voltage / g_num_battery_cells;
         float soc    = estimateSocFromPerCellVoltage(v_cell);
         showBatteryOnNeopixel(soc);
     }
 
     // Update web server
     server.handleClient();
-    delay(5);
+    yield();
 }
 
-// ======================= TASK 1: Parse RTCM =====================
+// ======================= RTOS TASK: Parse RTCM =====================
 
 void rtcmParseTask(void* arg)
 {
@@ -383,7 +407,7 @@ void rtcmParseTask(void* arg)
     }
 }
 
-// ======================= TASK 2: LoRa TX ========================
+// ======================= RTOS TASK: LoRa TX ========================
 
 void loraTxTask(void* arg)
 {
@@ -898,6 +922,21 @@ const char* INDEX_HTML = R"HTML(
       <div>% TX Busy (last 5 s)</div>
       <div class="big"><span id="txduty">--</span> <span class="unit">%</span></div>
     </div>
+    <div class="tile">
+    <div>Battery Cells</div>
+    <div class="big"><span id="cells-current">--</span><span class="unit"> S</span></div>
+    <div style="display:flex; gap:10px; align-items:center; margin-top:8px;">
+        <select id="cells-select"
+                style="background:#111; color:#eee; border:1px solid #333; border-radius:6px; padding:8px 10px;">
+        <option value="1">1S</option>
+        <option value="2">2S</option>
+        </select>
+        <button onclick="applyCells()"
+                style="background:#111; color:#eee; border:1px solid #333; border-radius:6px; padding:8px 12px; cursor:pointer;">
+        Apply
+        </button>
+    </div>
+    </div>
   </div>
   <div class="meta">Last Updated: <span id="ts">--</span></div>
 </div>
@@ -906,6 +945,15 @@ async function update(){
   try{
     const r = await fetch('/status');
     const j = await r.json();
+
+    if (typeof j.numBatteryCells === "number") {
+      document.getElementById('cells-current').textContent = String(j.numBatteryCells);
+
+      const sel = document.getElementById('cells-select');
+      if (sel && String(sel.value) !== String(j.numBatteryCells)) {
+        sel.value = String(j.numBatteryCells);
+      }
+    }
 
     if (typeof j.vin === "number")
         document.getElementById('vin').textContent    = j.vin.toFixed(3);
@@ -935,6 +983,18 @@ async function update(){
     console.log(e);
   }
 }
+async function applyCells(){
+  try{
+    const sel = document.getElementById('cells-select');
+    const cells = sel.value;
+    const r = await fetch(`/set_cells?cells=${encodeURIComponent(cells)}`);
+    const j = await r.json();
+    if (!j.ok) alert("Failed to set cells: " + (j.err || "unknown"));
+    await update(); // refresh UI
+  }catch(e){
+    alert("Error: " + e);
+  }
+}
 update();
 setInterval(update, 1000);
 </script>
@@ -947,7 +1007,7 @@ void handleRoot()
     server.send(200, "text/html; charset=utf-8", INDEX_HTML);
 }
 
-void handleStatus() 
+void handleStatus()
 {
     float          v     = voltage;
     size_t         tx    = last_tx_bytes;
@@ -963,11 +1023,48 @@ void handleStatus()
     json += "\"queued_bytes\":" + String(queued_bytes) + ",";
     json += "\"max_queued_bytes\":" + String(max_queued_bytes) + ",";
     json += "\"tx_bytes_window\":" + String(tx_bytes_last_window) + ",";
-    json += "\"tx_duty_pct\":" + String(tx_duty_last_window, 2);
+    json += "\"tx_duty_pct\":" + String(tx_duty_last_window, 2) + ",";
+
+    // NEW
+    json += "\"numBatteryCells\":" + String((int)g_num_battery_cells);
+
     json += "}";
 
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", json);
+}
+
+void handleSetCells()
+{
+    if (!server.hasArg("cells"))
+    {
+        server.send(400, "application/json", "{\"ok\":false,\"err\":\"missing cells\"}");
+        return;
+    }
+
+    int cells = server.arg("cells").toInt();
+    if (cells < 1 || cells > 6)   // adjust range if you only allow 1S/2S
+    {
+        server.send(400, "application/json", "{\"ok\":false,\"err\":\"cells out of range\"}");
+        return;
+    }
+
+    // Apply immediately
+    g_num_battery_cells = (uint8_t)cells;
+
+    // Persist to NVS
+    prefs.begin("base", false);
+    prefs.putUChar("cells", g_num_battery_cells);
+    prefs.end();
+
+    // Optional: immediately refresh battery estimate based on new cell count
+    float v_batt = readBatteryVoltage();
+    float v_cell = v_batt / g_num_battery_cells;
+    float soc    = estimateSocFromPerCellVoltage(v_cell);
+    showBatteryOnNeopixel(soc);
+
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", "{\"ok\":true}");
 }
 
 void startWeb() 
@@ -980,6 +1077,8 @@ void startWeb()
 
     server.on("/", handleRoot);
     server.on("/status", handleStatus);
+    server.on("/set_cells", HTTP_GET, handleSetCells);
+
     server.begin();
     Serial.println("HTTP server started on / and /status");
 }
