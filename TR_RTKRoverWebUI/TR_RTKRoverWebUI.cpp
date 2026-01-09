@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Tinkerbug Robotics
+// Copyright (c) 2026 Tinkerbug Robotics
 //
 // MIT License
 //
@@ -10,12 +10,15 @@ TR_RTKRoverWebUI::TR_RTKRoverWebUI(WebServer& server,
                                    TR_SkyTraqNMEA::GnssNmeaData& latest,
                                    bool& hasGnss,
                                    unsigned long& lastRtcmMs,
-                                   uint16_t& lastRtcmBlockBytes)
+                                   uint16_t& lastRtcmBlockBytes,
+                                   uint8_t& numBatteryCellsRuntime)
   : web_(server),
     g_latest_(latest),
     g_has_gnss_(hasGnss),
     g_lastRtcmMs_(lastRtcmMs),
-    g_lastRtcmBlockBytes_(lastRtcmBlockBytes)
+    g_lastRtcmBlockBytes_(lastRtcmBlockBytes),
+    num_battery_cells_(numBatteryCellsRuntime)
+
 {
 }
 
@@ -26,6 +29,7 @@ void TR_RTKRoverWebUI::begin()
     // Register routes using capturing lambdas that forward to member functions
     web_.on("/", HTTP_GET, [this]() { this->handleRoot(); });
     web_.on("/gnss.json", HTTP_GET, [this]() { this->handleGnssJson(); });
+    web_.on("/set_cells", HTTP_GET, [this](){ handleSetCells(); });
     web_.onNotFound([this]() { this->handleNotFound(); });
 
     web_.begin();
@@ -294,6 +298,28 @@ void TR_RTKRoverWebUI::handleRoot()
       <div id="rtcmBytes" class="value">--</div>
     </div>
   </div>
+  
+  <!-- Battery configuration -->
+  <div class="card">
+    <div class="label">Battery configuration</div>
+
+    <div class="label">Number of serial battery cells</div>
+    <div id="cells-current" class="value">--</div>
+
+    <div style="display:flex; gap:12px; align-items:center; margin-top:10px;">
+      <select id="cells-select"
+              style="background:#111; color:#eee; border:1px solid #333; border-radius:6px; padding:10px 12px;">
+        <option value="1">1S</option>
+        <option value="2">2S</option>
+      </select>
+
+      <button onclick="applyCells()"
+              style="background:#111; color:#eee; border:1px solid #333; border-radius:6px; padding:10px 14px; cursor:pointer;">
+        Apply
+      </button>
+    </div>
+    
+  </div>
 
   <div class="card-row">
     <!-- Left: sky plot -->
@@ -445,6 +471,19 @@ void TR_RTKRoverWebUI::handleRoot()
       });
     }
     
+    function applyCells()
+    {
+      const sel = document.getElementById('cells-select');
+      const cells = sel.value;
+      fetch(`/set_cells?cells=${encodeURIComponent(cells)}`)
+        .then(r => r.json())
+        .then(j => {
+          if (!j.ok) alert("Failed to set cells: " + (j.err || "unknown"));
+          updateStatus(); // refresh UI
+        })
+        .catch(e => alert("Error: " + e));
+    }
+    
     function updateStatus() {
       fetch('/gnss.json')
         .then(r => r.json())
@@ -461,6 +500,12 @@ void TR_RTKRoverWebUI::handleRoot()
           let satBarsBDS  = document.getElementById('satBarsBDS');
           let satBarsGLO  = document.getElementById('satBarsGLO');
           let satBarsOTHER = document.getElementById('satBarsOTHER');
+
+        if (typeof d.numBatteryCells === 'number') {
+          document.getElementById('cells-current').textContent = String(d.numBatteryCells);
+          const sel = document.getElementById('cells-select');
+          sel.value = String(d.numBatteryCells);
+        }
 
           // GNSS fix
           if (!d.hasFix) {
@@ -717,10 +762,37 @@ void TR_RTKRoverWebUI::handleGnssJson()
   // Last RTCM block size (bytes)
   json += ",\"lastRtcmBlockBytes\":";
   json += String(g_lastRtcmBlockBytes_);
+    
+  json += ",\"numBatteryCells\":";
+  json += String((int)num_battery_cells_);
 
   json += "}";
 
   web_.send(200, "application/json", json);
+}
+
+void TR_RTKRoverWebUI::handleSetCells()
+{
+  if (!web_.hasArg("cells")) {
+    web_.send(400, "application/json", "{\"ok\":false,\"err\":\"missing cells\"}");
+    return;
+  }
+
+  int cells = web_.arg("cells").toInt();
+  if (cells < 1 || cells > 6) { // adjust if you only want 1S/2S/etc
+    web_.send(400, "application/json", "{\"ok\":false,\"err\":\"cells out of range\"}");
+    return;
+  }
+
+  num_battery_cells_ = (uint8_t)cells;
+
+  // Persist to NVS
+  Preferences prefs;
+  prefs.begin("rover", false);
+  prefs.putUChar("cells", num_battery_cells_);
+  prefs.end();
+
+  web_.send(200, "application/json", "{\"ok\":true}");
 }
 
 void TR_RTKRoverWebUI::handleNotFound()
