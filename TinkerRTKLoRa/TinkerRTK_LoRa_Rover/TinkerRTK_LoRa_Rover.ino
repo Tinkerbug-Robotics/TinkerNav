@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Tinkerbug Robotics
+// Copyright (c) 2026 Tinkerbug Robotics
 //
 // MIT License
 //
@@ -14,6 +14,7 @@
 #include <WebServer.h>
 #include <RadioLib.h>
 #include <CRC.h>
+#include <Preferences.h>
 
 // Tinkerbug library for the rover web UI
 #include <TR_RTKRoverWebUI.h>
@@ -25,9 +26,13 @@ TR_SkyTraqNMEA sky(Serial1);
 // Separate UART for RTCM corrections -> RXD2 pin on receiver
 HardwareSerial SerialRTCM(2);
 
-// ======================= LoRa Radio =============================
+// Store settings in permanent memory, fall back to defaults only
+// if no value exists in preferences memory
+Preferences prefs;
+uint8_t g_num_battery_cells = config::NUM_BATTERY_CELLS;
 
-SX1262 radio = SX1262(new Module(config::L_CS,
+// ======================= LoRa Radio =============================
+LLCC68 radio = LLCC68(new Module(config::L_CS,
                                  config::L_DIO1,
                                  config::L_RST,
                                  config::L_BUSY,
@@ -70,10 +75,10 @@ TR_RTKRoverWebUI roverUI(web,
                          g_latest,
                          g_has_gnss,
                          g_lastRtcmMs,
-                         g_lastRtcmBlockBytes);
+                         g_lastRtcmBlockBytes,
+                         g_num_battery_cells);
 
 // ======================= Battery / Neopixel =====================
-
 float voltage = 0.0f;
 Adafruit_NeoPixel pixels(1, config::NEO_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -112,6 +117,21 @@ void setup()
     analogSetAttenuation(ADC_11db);
     pinMode(config::VOLTAGE_PIN, INPUT);
 
+    // Load saved battery cell count (NVS). If not present, use config.h default.
+    prefs.begin("rover", false);  // namespace "rover", RW
+    uint8_t saved = prefs.getUChar("cells", 0xFF);
+    if (saved >= 1 && saved <= 6)
+    {
+        g_num_battery_cells = saved;
+        Serial.printf("Loaded NUM_BATTERY_CELLS from NVS: %u\n", g_num_battery_cells);
+    }
+    else
+    {
+        g_num_battery_cells = config::NUM_BATTERY_CELLS;
+        Serial.printf("No saved NUM_BATTERY_CELLS; using config.h default: %u\n", g_num_battery_cells);
+    }
+    prefs.end();
+
     // NeoPixel
     pixels.begin();
     pixels.clear();
@@ -119,7 +139,7 @@ void setup()
 
     // Initial battery read
     float v_batt = readBatteryVoltage();
-    float v_cell = v_batt / config::NUM_BATTERY_CELLS;
+    float v_cell = v_batt / g_num_battery_cells;
     float soc    = estimateSocFromPerCellVoltage(v_cell);
     voltage = v_batt;
 
@@ -139,7 +159,7 @@ void setup()
     // Optional RF switch via DIO2 if used on your board
     radio.setDio2AsRfSwitch(true);
 
-    Serial.print("SX1262 initializing ... ");
+    Serial.print("LoRa radio initializing ... ");
 
     int state = radio.begin();
     if (state != RADIOLIB_ERR_NONE)
@@ -212,7 +232,7 @@ void loop()
         lastBatteryMs = now;
         voltage = readBatteryVoltage();
 
-        float v_cell = voltage / config::NUM_BATTERY_CELLS;
+        float v_cell = voltage / g_num_battery_cells;
         float soc    = estimateSocFromPerCellVoltage(v_cell);
 
         // Update NeoPixel based on GNSS quality
