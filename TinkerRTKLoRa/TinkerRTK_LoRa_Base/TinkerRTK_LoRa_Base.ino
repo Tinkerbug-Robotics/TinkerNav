@@ -232,7 +232,7 @@ void setup()
                                     0x00,  // 1 Hz
                                     true,  // 1005
                                     true,  // GPS MSM
-                                    true,  // GLO
+                                    false, // GLO (PX1105R has no GLONASS, enabling it NACKs)
                                     true,  // GAL
                                     true,  // BDS
                                     0x1E,0x00,0x1E,0x1E,

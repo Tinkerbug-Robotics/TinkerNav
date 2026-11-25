@@ -76,22 +76,29 @@ void setup()
     }
     delay(1500);
 
+    // Receiver can answer slowly right after the survey-in command,
+    // so retry as the LoRa base does
     Serial.println("    Configuring output ...");
-    if (sky.configureRtcmOutput(true,
-                                0x00,   // 1 Hz
-                                true,   // 1005
-                                true,   // GPS MSM
-                                true,   // GLO
-                                true,   // GAL
-                                true,   // BDS
-                                0x1E,0x00,0x1E,0x1E,
-                                0x01,
-                                0x02,
-                                false)!= 1)
+    int rtcm_attempts = 1;
+    while (sky.configureRtcmOutput(true,
+                                   0x00,   // 1 Hz
+                                   true,   // 1005
+                                   true,   // GPS MSM
+                                   false,  // GLO (PX1105R has no GLONASS, enabling it NACKs)
+                                   true,   // GAL
+                                   true,   // BDS
+                                   0x1E,0x00,0x1E,0x1E,
+                                   0x01,
+                                   0x02,
+                                   false)!= 1)
     {
-        Serial.println("    RTCM output configuration failed, stopping");
-        while (1) { delay(100); }
+        Serial.print("    RTCM output configuration failed (attempt ");
+        Serial.print(rtcm_attempts++);
+        Serial.println("), retrying");
+        delay(500);
     }
+    Serial.print("    RTCM output configured on attempt ");
+    Serial.println(rtcm_attempts);
 
     if (!sky.disableStandardNmea())
     {

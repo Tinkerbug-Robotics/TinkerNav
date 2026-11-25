@@ -990,6 +990,30 @@ bool TR_SkyTraqNMEA::configureRtkRoverMode(bool saveToFlash)
   // Optional: flush any leftover bytes
   drain(30);
 
+  // Newer receivers (PX1105R) NACK the legacy 0x6A/0x01 form and only take
+  // 0x6A/0x06 "Configure RTK Mode and Operational Function" (the same
+  // 37-byte message configureRtkBaseSurvey uses). Try that first:
+  //   body[0] = RTK mode 0 (rover), body[1] = operational function 0
+  //   (normal), survey/position fields 0, body[34] = attributes.
+  {
+    uint8_t payload6[37];
+    memset(payload6, 0, sizeof(payload6));
+    payload6[0] = 0x6A;
+    payload6[1] = 0x06;
+    payload6[2 + 34] = saveToFlash ? 0x01 : 0x00;
+
+    Serial.println(F("Sending Configure RTK Mode (rover, 0x6A/0x06)..."));
+    sendFrame(payload6, sizeof(payload6));
+    CmdResult r6 = waitAckOrNack(0x6A, 0x06, 2000);
+    Serial.printf("configureRtkRoverMode (0x6A/0x06): result=%d (%s)\n",
+                  (int)r6,
+                  (r6 == CR_ACK ? "ACK"
+                   : (r6 == CR_NACK ? "NACK" : "TIMEOUT")));
+    if (r6 == CR_ACK) return true;
+    drain(30);
+  }
+
+  // Fallback for older receivers: legacy 0x6A/0x01.
   // Payload layout for sendFrame():
   //   [0] = Message ID   = 0x6A
   //   [1] = Sub-ID       = 0x01 (Configure RTK Mode)
